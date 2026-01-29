@@ -1,0 +1,3 @@
+[submodule "dolibarr-source"]
+	path = dolibarr-source
+	url = https://github.com/Dolibarr/dolibarr.git

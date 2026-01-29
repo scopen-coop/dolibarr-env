@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="${ROOT_DIR}/docker/compose.yml"
+
+usage() {
+  echo "Usage:"
+  echo "  ./client up <client>"
+  echo "  ./client down <client> [--volumes]"
+  echo "  ./client restart <client>"
+  echo "  ./client logs <client>"
+  echo "  ./client shell <client>"
+  echo "  ./client restore <client> [dump.sql|dump.sql.gz] (par defaut clients/<client>/db/dump.sql.gz)"
+  echo "  ./client url <client>"
+  echo "  ./client config <client>"
+  echo "  ./client build <client> [args...]"
+  echo "  ./client create <client> [dolibarr_version] [php_image]"
+  exit 1
+}
+
+need_client_env() {
+  local client="$1"
+  local env_file="${ROOT_DIR}/clients/${client}/.env"
+  if [[ ! -f "${env_file}" ]]; then
+    echo "Missing ${env_file}"
+    exit 1
+  fi
+  echo "${env_file}"
+}
+
+dc() {
+  local client="$1"
+  local env_file
+  env_file="$(need_client_env "${client}")"
+
+  shift
+  # shellcheck disable=SC2046
+  docker compose -f "${COMPOSE_FILE}" --env-file "${env_file}" -p "$(grep -E '^PROJECT=' "${env_file}" | cut -d= -f2)" "$@"
+}
+
+db_up() {
+  docker compose -f "${ROOT_DIR}/database/compose.yml" up -d
+}
+
+db_exec() {
+  docker exec -i dolibarr-db mariadb "$@"
+}
+
+client_url() {
+  local client="$1"
+  local env_file="${ROOT_DIR}/clients/${client}/.env"
+  local vhost
+  vhost="$(grep -E '^VHOST=' "${env_file}" | cut -d= -f2)"
+  echo "http://${vhost}/"
+}
+
+cmd="${1:-}"
+client="${2:-}"
+
+case "${cmd}" in
+  up)
+    [[ -n "${client}" ]] || usage
+    shift 2
+    db_up
+    dc "${client}" up -d --remove-orphans "$@"
+    echo "$(client_url "${client}")"
+    ;;
+
+  down)
+    [[ -n "${client}" ]] || usage
+    shift 2
+    dc "${client}" down "$@"
+    ;;
+
+  restart)
+    [[ -n "${client}" ]] || usage
+    shift 2
+    dc "${client}" restart "$@"
+    ;;
+
+  logs)
+    [[ -n "${client}" ]] || usage
+    shift 2
+    dc "${client}" logs -f --tail=200 "$@"
+    ;;
+
+  shell)
+    [[ -n "${client}" ]] || usage
+    shift 2
+    dc "${client}" exec php bash "$@"
+    ;;
+
+  url)
+    [[ -n "${client}" ]] || usage
+    client_url "${client}"
+    ;;
+
+  restore)
+    [[ -n "${client}" ]] || usage
+    env_file="$(need_client_env "${client}")"
+
+    # Lire variables depuis .env
+    DB_NAME="$(grep -E '^DB_NAME=' "${env_file}" | cut -d= -f2)"
+    DB_USER="$(grep -E '^DB_USER=' "${env_file}" | cut -d= -f2)"
+    DB_PASS="$(grep -E '^DB_PASS=' "${env_file}" | cut -d= -f2)"
+    DB_ROOT_PASS="$(grep -E '^DB_ROOT_PASS=' "${env_file}" | cut -d= -f2)"
+
+    dump_path="${3:-${ROOT_DIR}/clients/${client}/db/dump.sql.gz}"
+    if [[ ! -f "${dump_path}" ]]; then
+      echo "Dump not found: ${dump_path}"
+      exit 1
+    fi
+
+    # Assure stack up
+    db_up
+
+    echo "Cleaning and Restoring ${dump_path} into ${DB_NAME} ..."
+
+    # Vide la base pour repartir de zéro
+    db_exec -uroot -p"${DB_ROOT_PASS}" -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`; CREATE DATABASE \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+    # Harmonisation utf8mb3 -> utf8mb4 pour éviter les erreurs de collation/clés étrangères
+    # et suppression des DEFINER
+    SED_CMDS="s/utf8mb3/utf8mb4/g; s/utf8_unicode_ci/utf8mb4_unicode_ci/g; s/utf8_general_ci/utf8mb4_general_ci/g; s/DEFINER=[^ ]*//g; s/DEFINER=[^*]*\*/\*/g"
+
+    if [[ "${dump_path}" == *.gz ]]; then
+      (echo "SET FOREIGN_KEY_CHECKS=0; SET NAMES utf8mb4;"; gunzip -c "${dump_path}" | sed -e "${SED_CMDS}"; echo "SET FOREIGN_KEY_CHECKS=1;") | db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}"
+    else
+      (echo "SET FOREIGN_KEY_CHECKS=0; SET NAMES utf8mb4;"; cat "${dump_path}" | sed -e "${SED_CMDS}"; echo "SET FOREIGN_KEY_CHECKS=1;") | db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}"
+    fi
+
+    echo "Done."
+
+    # Création du verrou d'installation
+    touch "${ROOT_DIR}/clients/${client}/documents/install.lock"
+    chmod 664 "${ROOT_DIR}/clients/${client}/documents/install.lock"
+    echo "Install lock created."
+    ;;
+  
+  config)
+    [[ -n "${client}" ]] || usage
+    dc "${client}" config
+    ;;
+
+  build)
+    [[ -n "${client}" ]] || usage
+    shift 2
+    dc "${client}" build "$@"
+    ;;
+
+  create)
+    [[ -n "${client}" ]] || usage
+    
+    doli_version="${3:-22}"
+    php_image="${4:-php:8.4-fpm-bookworm}"
+
+    # Validation version Dolibarr
+    CORE_DIR="${ROOT_DIR}/cores/dolibarr-${doli_version}/htdocs"
+    if [[ ! -d "${CORE_DIR}" ]]; then
+      echo "Error: Dolibarr core version ${doli_version} not found in ${ROOT_DIR}/cores/dolibarr-${doli_version}"
+      echo "Available versions:"
+      ls -1 "${ROOT_DIR}/cores" | sed 's/dolibarr-//'
+      exit 1
+    fi
+
+    CLIENT_DIR="${ROOT_DIR}/clients/${client}"
+    if [[ -d "${CLIENT_DIR}" ]]; then
+      echo "Error: Client directory ${CLIENT_DIR} already exists."
+      exit 1
+    fi
+
+    echo "Creating client ${client} (Dolibarr ${doli_version}, PHP ${php_image}) in ${CLIENT_DIR} ..."
+    
+    # Arborescence
+    mkdir -p "${CLIENT_DIR}/"{conf,custom,db,documents}
+    touch "${CLIENT_DIR}/"{conf,custom,db,documents}/.gitkeep
+
+    # .env initial
+    cat <<EOF > "${CLIENT_DIR}/.env"
+PROJECT=${client}
+VHOST=${client}.local
+
+DOLI_CORE_PATH=../cores/dolibarr-${doli_version}/htdocs
+CLIENT_PATH=../clients/${client}
+
+PHP_IMAGE=${php_image}
+
+# Database Shared settings
+DB_NAME=${client}_dolibarr
+DB_USER=${client}_dolibarr
+DB_PASS=$(openssl rand -hex 12)
+DB_ROOT_PASS=root
+EOF
+
+    # Creation base et user dans le conteneur partagé
+    db_up
+    echo "Creating database and user in shared MariaDB ..."
+    # shellcheck disable=SC2094
+    db_exec -uroot -p"root" <<EOSQL
+CREATE DATABASE IF NOT EXISTS \`${client}_dolibarr\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${client}_dolibarr'@'%' IDENTIFIED BY '$(grep '^DB_PASS=' "${CLIENT_DIR}/.env" | cut -d= -f2)';
+CREATE USER IF NOT EXISTS '${client}_dolibarr'@'localhost' IDENTIFIED BY '$(grep '^DB_PASS=' "${CLIENT_DIR}/.env" | cut -d= -f2)';
+GRANT ALL PRIVILEGES ON \`${client}_dolibarr\`.* TO '${client}_dolibarr'@'%';
+GRANT ALL PRIVILEGES ON \`${client}_dolibarr\`.* TO '${client}_dolibarr'@'localhost';
+FLUSH PRIVILEGES;
+EOSQL
+
+    # conf.php initial
+    cat <<EOF > "${CLIENT_DIR}/conf/conf.php"
+<?php
+// Configuration forcee pour BDD partagee
+\$dolibarr_main_url_root='http://${client}.local';
+\$dolibarr_main_document_root='/var/www/html';
+\$dolibarr_main_url_root_alt='/custom';
+\$dolibarr_main_document_root_alt='/var/www/html/custom';
+\$dolibarr_main_data_root='/var/www/html/documents';
+\$dolibarr_main_db_host='dolibarr-db';
+\$dolibarr_main_db_user='${client}_dolibarr';
+\$dolibarr_main_db_pass='$(grep '^DB_PASS=' "${CLIENT_DIR}/.env" | cut -d= -f2)';
+\$dolibarr_main_db_name='${client}_dolibarr';
+EOF
+
+    echo "Environment created for ${client}."
+    echo ""
+    echo "Next steps:"
+    echo "  1. Add this line to your /etc/hosts:"
+    echo "     127.0.0.1 ${client}.local"
+    echo "  2. Run: ./client up ${client}"
+    echo "  3. Go to: http://${client}.local/install/"
+    ;;
+
+  *)
+    usage
+    ;;
+esac

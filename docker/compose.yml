@@ -1,0 +1,45 @@
+services:
+  php:
+    build:
+      context: ./php
+      dockerfile: Dockerfile
+      args:
+        PHP_VERSION: ${PHP_IMAGE:-php:8.2-fpm-bookworm}
+    working_dir: /var/www/html
+    volumes:
+      - ${DOLI_CORE_PATH}:/var/www/html:rw
+      - ${CLIENT_PATH}/conf:/var/www/html/conf:rw
+      - ${CLIENT_PATH}/documents:/var/www/html/documents:rw
+      - ${CLIENT_PATH}/custom:/var/www/html/custom:rw
+    networks:
+      - internal
+      - dolibarr-network
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - php
+    volumes:
+      - ${DOLI_CORE_PATH}:/var/www/html:ro
+      - ${CLIENT_PATH}/conf:/var/www/html/conf:ro
+      - ${CLIENT_PATH}/documents:/var/www/html/documents:rw
+      - ${CLIENT_PATH}/custom:/var/www/html/custom:ro
+      - ./nginx/dolibarr.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${PROJECT}.rule=Host(`${VHOST}`)
+      - traefik.http.routers.${PROJECT}.entrypoints=web
+      - traefik.http.services.${PROJECT}.loadbalancer.server.port=80
+      - traefik.docker.network=proxy
+    networks:
+      - proxy
+      - internal
+
+networks:
+  proxy:
+    external: true
+    name: proxy
+  internal:
+  dolibarr-network:
+    external: true
+    name: dolibarr-network

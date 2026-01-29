@@ -1,65 +1,43 @@
-# dollibar-env
+# Dolibarr Multi-Client Environment
 
-Ensemble de services Docker Compose pour travailler simultanément sur les versions 16 à 22 de Dolibarr.
+Ce projet permet de gérer plusieurs instances de Dolibarr de manière isolée tout en partageant une infrastructure commune (Reverse Proxy, Base de données MariaDB partagée) via Docker.
 
-## Prérequis
+## Structure du Projet
 
-- Docker et Docker Compose
-- Fork Git de Dolibarr pour chaque version que vous souhaitez modifier
-- Entrées DNS/hosts pointant vers votre machine pour `dylan.local` et `dolibarr16.local` … `dolibarr22.local`
+- `reverse-proxy/` : Configuration Traefik (v3) pour le routage des noms de domaines.
+- `database/` : Configuration de la base de données MariaDB partagée (`dolibarr-db`).
+- `docker/` : Configuration Docker pour les services Nginx et PHP par client.
+- `clients/` : Données spécifiques à chaque client (fichiers `.env`, conf, documents, modules custom).
+- `dolibarr-source/` : **Submodule Git** pointant vers le dépôt officiel Dolibarr.
+- `cores/` : Dossiers de versions basés sur des **Git Worktrees** liés au submodule.
+- `modules-common/` : Modules Dolibarr partagés entre tous les clients.
+- `./client` : Script de gestion principal.
 
-## Structure du projet
+## Gestion des Cores (Git Worktrees)
 
-```
-.
-├── dashboard/               # Interface web servie à dylan.local
-│   ├── index.html
-│   └── nginx.conf
-├── docker-compose.yml        # Stack complète Traefik + Dolibarr + MariaDB
-└── instances/
-    ├── dolibarr-16/
-    ├── dolibarr-17/
-    ├── dolibarr-18/
-    ├── dolibarr-19/
-    ├── dolibarr-20/
-    ├── dolibarr-21/
-    └── dolibarr-22/
+Les versions de Dolibarr dans `cores/` ne sont pas des copies, mais des "worktrees" qui partagent la même base Git pour économiser de l'espace.
+
+Pour ajouter une nouvelle version (ex: 15) :
+```bash
+git -C dolibarr-source worktree add ../cores/dolibarr-15 15.0
 ```
 
-Chaque dossier `instances/dolibarr-XX` est monté dans le conteneur correspondant, ce qui vous permet d'éditer le code localement et de committer directement sur votre fork.
+## Utilisation de `./client`
 
-## Mise en place
+### Créer un nouveau client
+```bash
+./client create <nom> [version_dolibarr] [image_php]
+```
+Exemple : `./client create mon-projet 18 php:7.4-fpm-alpine`
 
-1. Clonez votre fork Dolibarr dans le dossier prévu pour chaque version. Exemple :
-   ```bash
-   git clone git@github.com:mon-fork/dolibarr.git instances/dolibarr-16
-   git -C instances/dolibarr-16 checkout 16.x
-   ```
-   Répétez pour les autres versions souhaitées.
+### Commandes usuelles
+- `./client up <client>` : Démarre l'instance.
+- `./client down <client> [--volumes]` : Arrête l'instance.
+- `./client restore <client> [dump.sql.gz]` : Restaure une BDD et crée le `install.lock`.
+- `./client logs <client>` : Logs en temps réel.
+- `./client build <client>` : Reconstruit l'image PHP.
 
-2. Vérifiez/ajoutez les entrées dans votre fichier hosts (ou votre DNS interne) :
-   ```
-   127.0.0.1 dylan.local
-   127.0.0.1 dolibarr16.local
-   127.0.0.1 dolibarr17.local
-   127.0.0.1 dolibarr18.local
-   127.0.0.1 dolibarr19.local
-   127.0.0.1 dolibarr20.local
-   127.0.0.1 dolibarr21.local
-   127.0.0.1 dolibarr22.local
-   ```
+## Architecture
 
-3. Lancez la stack :
-   ```bash
-   docker compose up -d
-   ```
-
-4. Accédez au dashboard : http://dylan.local
-
-5. Ouvrez les instances directement via les liens sur le dashboard ou via les URL dédiées (`http://dolibarr16.local`, etc.).
-
-## Notes
-
-- Les bases de données MariaDB sont persistées via des volumes Docker (`dbXX_data`).
-- Le tableau de bord Traefik est disponible sur http://localhost:8080 (protégé par défaut par Traefik, configurez selon vos besoins).
-- Adaptez les variables d'environnement (utilisateur/mot de passe) dans `docker-compose.yml` si besoin.
+Les dossiers `custom` des clients sont montés dans `/var/www/html/custom/` pour assurer la visibilité des modules.
+Le fichier `conf.php` utilise des chemins absolus pour éviter les erreurs de logs.

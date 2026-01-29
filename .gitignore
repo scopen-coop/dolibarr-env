@@ -1,0 +1,27 @@
+# Docker / Compose
+.env*
+!.env.example
+
+# Dolibarr Data (Client specific)
+clients/*/documents/*
+!clients/*/documents/.gitkeep
+clients/*/db/*
+!clients/*/db/.gitkeep
+clients/*/custom/*
+!clients/*/custom/.gitkeep
+clients/*/conf/conf.php
+
+# Dolibarr Cores (Managed via Git Worktrees)
+cores/
+# dolibarr-source/ (Submodule, tracked by git)
+
+# System/IDE
+.idea/
+.vscode/
+*.swp
+*.log
+.DS_Store
+
+# Temporary files
+fichier_restaure.txt
+_empty/

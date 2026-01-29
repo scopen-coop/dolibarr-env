@@ -1,0 +1,19 @@
+services:
+  db:
+    image: mariadb:10.11
+    container_name: dolibarr-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - dolibarr-network
+
+networks:
+  dolibarr-network:
+    name: dolibarr-network
+    driver: bridge
+
+volumes:
+  db_data:
+    name: dolibarr-db-data
