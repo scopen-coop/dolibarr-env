@@ -1,6 +1,0 @@
-<?php
-// Configuration forcee pour BDD partagee
-$dolibarr_main_db_host='dolibarr-db';
-$dolibarr_main_db_user='irisolaris_dolibarr';
-$dolibarr_main_db_pass='5f4577bdb18bdbd08e201b43';
-$dolibarr_main_db_name='irisolaris_dolibarr';
