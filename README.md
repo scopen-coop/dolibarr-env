@@ -13,16 +13,33 @@ Ce projet permet de gérer plusieurs instances de Dolibarr de manière isolée t
 - `modules-common/` : Modules Dolibarr partagés entre tous les clients.
 - `./client` : Script de gestion principal.
 
-## Gestion des Cores (Git Worktrees)
+## Installation Initiale (Git)
 
-Les versions de Dolibarr dans `cores/` ne sont pas des copies, mais des "worktrees" qui partagent la même base Git pour économiser de l'espace.
+Après avoir cloné ce dépôt, vous devez initialiser le submodule et les worktrees pour les versions de Dolibarr.
 
-Pour ajouter une nouvelle version (ex: 15) :
+### 1. Initialiser le Submodule
 ```bash
-git -C dolibarr-source worktree add ../cores/dolibarr-15 15.0
+git submodule update --init --recursive
 ```
 
-## Utilisation de `./client`
+### 2. Configurer les Worktrees (Cores)
+Les dossiers dans `cores/` sont ignorés par Git. Vous devez les recréer à partir du submodule :
+```bash
+# Exemple pour les versions courantes
+mkdir -p cores
+for v in 16 17 18 19 20 21 22; do
+  git -C dolibarr-source worktree add ../cores/dolibarr-${v} ${v}.0
+done
+```
+
+### 3. Mettre à jour Dolibarr
+Pour récupérer les dernières mises à jour du dépôt officiel :
+```bash
+git submodule update --remote --merge
+```
+Cela mettra à jour votre dossier `dolibarr-source`. Les dossiers dans `cores/` étant branchés sur des noms de branches (ex: `18.0`), ils seront également à jour lors de vos prochaines opérations Docker.
+
+## Gestion des Clients via `./client`
 
 ### Créer un nouveau client
 ```bash
