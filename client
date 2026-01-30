@@ -221,6 +221,48 @@ EOSQL
 \$dolibarr_main_db_name='${client}_dolibarr';
 EOF
 
+    # Configuration PHPStorm (.idea)
+    mkdir -p "${CLIENT_DIR}/.idea"
+
+    # modules.xml
+    cat <<EOF > "${CLIENT_DIR}/.idea/modules.xml"
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://\$PROJECT_DIR\$/.idea/${client}.iml" filepath="\$PROJECT_DIR\$/.idea/${client}.iml" />
+    </modules>
+  </component>
+</project>
+EOF
+
+    # php.xml
+    cat <<EOF > "${CLIENT_DIR}/.idea/php.xml"
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PhpProjectSharedConfiguration" php_language_level="7.4">
+    <option name="suggestChangeDefaultLanguageLevel" value="false" />
+  </component>
+</project>
+EOF
+
+    # ${client}.iml
+    cat <<EOF > "${CLIENT_DIR}/.idea/${client}.iml"
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://\$MODULE_DIR\$">
+      <excludeFolder url="file://\$MODULE_DIR\$/documents" />
+    </content>
+    <content url="file://\$MODULE_DIR\$/../../cores/dolibarr-${doli_version}">
+      <sourceFolder url="file://\$MODULE_DIR\$/../../cores/dolibarr-${doli_version}" isTestSource="false" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
+EOF
+
     echo "Environment created for ${client}."
     echo ""
     echo "Next steps:"
