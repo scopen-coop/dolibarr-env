@@ -11,6 +11,7 @@ services:
       - ${CLIENT_PATH}/conf:/var/www/html/conf:rw
       - ${CLIENT_PATH}/documents:/var/www/html/documents:rw
       - ${CLIENT_PATH}/custom:/var/www/html/custom:rw
+      - ${CLIENT_PATH}/scripts:/var/www/scripts:rw
     networks:
       - internal
       - dolibarr-network
@@ -29,6 +30,9 @@ services:
       - traefik.enable=true
       - traefik.http.routers.${PROJECT}.rule=Host(`${VHOST}`)
       - traefik.http.routers.${PROJECT}.entrypoints=web
+      - traefik.http.routers.${PROJECT}-secure.rule=Host(`${VHOST}`)
+      - traefik.http.routers.${PROJECT}-secure.entrypoints=websecure
+      - traefik.http.routers.${PROJECT}-secure.tls=true
       - traefik.http.services.${PROJECT}.loadbalancer.server.port=80
       - traefik.docker.network=proxy
     networks:

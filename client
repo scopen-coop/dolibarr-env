@@ -1,30 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Configuration & Globals ---
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/docker/compose.yml"
+CLIENTS_DIR="${ROOT_DIR}/clients"
+CORES_DIR="${ROOT_DIR}/cores"
+
+# Colors
+export LC_ALL=C.UTF-8
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# --- Utilities ---
+log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+log_step()    { echo -e "${PURPLE}➜${NC} $1"; }
 
 usage() {
+  echo -e "${CYAN}Dolibarr Docker Client Manager${NC}"
   echo "Usage:"
-  echo "  ./client up <client>"
-  echo "  ./client down <client> [--volumes]"
-  echo "  ./client restart <client>"
-  echo "  ./client logs <client>"
-  echo "  ./client shell <client>"
-  echo "  ./client restore <client> [dump.sql|dump.sql.gz] (par defaut clients/<client>/db/dump.sql.gz)"
-  echo "  ./client url <client>"
-  echo "  ./client config <client>"
-  echo "  ./client build <client> [args...]"
-  echo "  ./client create <client> [dolibarr_version] [php_image]"
+  echo "  ./client list                        List all clients"
+  echo "  ./client create [name] [ver] [img]   Create a new client (interactive if args missing)"
+  echo "  ./client up <client>                 Start a client"
+  echo "  ./client down <client> [--volumes]   Stop a client"
+  echo "  ./client restart <client>            Restart a client"
+  echo "  ./client status [client]             Show status of one or all clients"
+  echo "  ./client logs <client>               Show logs"
+  echo "  ./client shell <client>              Open a shell in the PHP container"
+  echo "  ./client restore <client> [dump]     Restore a database dump"
+  echo "  ./client url <client>                Show client URL"
+  echo "  ./client hosts <client>              Show command to update /etc/hosts"
+  echo "  ./client build <client>              Rebuild client image"
   exit 1
 }
 
 need_client_env() {
   local client="$1"
-  local env_file="${ROOT_DIR}/clients/${client}/.env"
+  local env_file="${CLIENTS_DIR}/${client}/.env"
   if [[ ! -f "${env_file}" ]]; then
-    echo "Missing ${env_file}"
-    exit 1
+    log_error "Client '${client}' not found (missing .env in ${env_file})"
   fi
   echo "${env_file}"
 }
@@ -33,13 +55,15 @@ dc() {
   local client="$1"
   local env_file
   env_file="$(need_client_env "${client}")"
-
   shift
-  # shellcheck disable=SC2046
-  docker compose -f "${COMPOSE_FILE}" --env-file "${env_file}" -p "$(grep -E '^PROJECT=' "${env_file}" | cut -d= -f2)" "$@"
+  # Retrieve PROJECT from .env
+  local project
+  project=$(grep -E '^PROJECT=' "${env_file}" | cut -d= -f2)
+  docker compose -f "${COMPOSE_FILE}" --env-file "${env_file}" -p "${project}" "$@"
 }
 
 db_up() {
+  log_info "Ensuring shared database is up..."
   docker compose -f "${ROOT_DIR}/database/compose.yml" up -d
 }
 
@@ -49,138 +73,128 @@ db_exec() {
 
 client_url() {
   local client="$1"
-  local env_file="${ROOT_DIR}/clients/${client}/.env"
+  local env_file="${CLIENTS_DIR}/${client}/.env"
+  if [[ ! -f "${env_file}" ]]; then return; fi
   local vhost
   vhost="$(grep -E '^VHOST=' "${env_file}" | cut -d= -f2)"
   echo "http://${vhost}/"
 }
 
+get_available_versions() {
+  ls -1 "${CORES_DIR}" | grep "dolibarr-" | sed 's/dolibarr-//' | sort -V
+}
+
+update_hosts() {
+  local vhost="$1"
+  if grep -qE "\s${vhost}$" /etc/hosts; then
+    log_info "Host '${vhost}' already exists in /etc/hosts."
+  else
+    log_step "Adding '${vhost}' to /etc/hosts (requires sudo)..."
+    echo "127.0.0.1 ${vhost}" | sudo tee -a /etc/hosts > /dev/null
+    log_success "Hosts updated."
+  fi
+}
+
+# --- Commands ---
+
 cmd="${1:-}"
-client="${2:-}"
+client_arg="${2:-}"
 
 case "${cmd}" in
-  up)
-    [[ -n "${client}" ]] || usage
-    shift 2
-    db_up
-    dc "${client}" up -d --remove-orphans "$@"
-    echo "$(client_url "${client}")"
+  list)
+    echo -e "${CYAN}Registered Clients:${NC}"
+    printf "%-20s %-10s %-30s %-10s\n" "CLIENT" "VERSION" "URL" "STATUS"
+    echo "--------------------------------------------------------------------------------"
+    for cdir in "${CLIENTS_DIR}"/*; do
+      if [[ -d "${cdir}" && -f "${cdir}/.env" ]]; then
+        name=$(basename "${cdir}")
+        version=$(grep "DOLI_CORE_PATH" "${cdir}/.env" | sed 's/.*dolibarr-\(.*\)\/htdocs.*/\1/')
+        url=$(client_url "${name}")
+        status=$(docker compose -f "${COMPOSE_FILE}" --env-file "${cdir}/.env" -p "${name}" ps --format "{{.State}}" 2>/dev/null | head -n1 || echo "stopped")
+        [[ -z "$status" ]] && status="stopped"
+        
+        case "$status" in
+          running) status_color="${GREEN}${status}${NC}" ;;
+          *) status_color="${RED}${status}${NC}" ;;
+        esac
+        
+        printf "%-20s %-10s %-30s %b\n" "${name}" "${version}" "${url}" "${status_color}"
+      fi
+    done
     ;;
 
-  down)
-    [[ -n "${client}" ]] || usage
-    shift 2
-    dc "${client}" down "$@"
-    ;;
-
-  restart)
-    [[ -n "${client}" ]] || usage
-    shift 2
-    dc "${client}" restart "$@"
-    ;;
-
-  logs)
-    [[ -n "${client}" ]] || usage
-    shift 2
-    dc "${client}" logs -f --tail=200 "$@"
-    ;;
-
-  shell)
-    [[ -n "${client}" ]] || usage
-    shift 2
-    dc "${client}" exec php bash "$@"
-    ;;
-
-  url)
-    [[ -n "${client}" ]] || usage
-    client_url "${client}"
-    ;;
-
-  restore)
-    [[ -n "${client}" ]] || usage
-    env_file="$(need_client_env "${client}")"
-
-    # Lire variables depuis .env
-    DB_NAME="$(grep -E '^DB_NAME=' "${env_file}" | cut -d= -f2)"
-    DB_USER="$(grep -E '^DB_USER=' "${env_file}" | cut -d= -f2)"
-    DB_PASS="$(grep -E '^DB_PASS=' "${env_file}" | cut -d= -f2)"
-    DB_ROOT_PASS="$(grep -E '^DB_ROOT_PASS=' "${env_file}" | cut -d= -f2)"
-
-    dump_path="${3:-${ROOT_DIR}/clients/${client}/db/dump.sql.gz}"
-    if [[ ! -f "${dump_path}" ]]; then
-      echo "Dump not found: ${dump_path}"
-      exit 1
-    fi
-
-    # Assure stack up
-    db_up
-
-    echo "Cleaning and Restoring ${dump_path} into ${DB_NAME} ..."
-
-    # Vide la base pour repartir de zéro
-    db_exec -uroot -p"${DB_ROOT_PASS}" -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`; CREATE DATABASE \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-
-    # Harmonisation utf8mb3 -> utf8mb4 pour éviter les erreurs de collation/clés étrangères
-    # et suppression des DEFINER
-    SED_CMDS="s/utf8mb3/utf8mb4/g; s/utf8_unicode_ci/utf8mb4_unicode_ci/g; s/utf8_general_ci/utf8mb4_general_ci/g; s/DEFINER=[^ ]*//g; s/DEFINER=[^*]*\*/\*/g"
-
-    if [[ "${dump_path}" == *.gz ]]; then
-      (echo "SET FOREIGN_KEY_CHECKS=0; SET NAMES utf8mb4;"; gunzip -c "${dump_path}" | sed -e "${SED_CMDS}"; echo "SET FOREIGN_KEY_CHECKS=1;") | db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}"
+  status)
+    if [[ -n "${client_arg}" ]]; then
+      dc "${client_arg}" ps
     else
-      (echo "SET FOREIGN_KEY_CHECKS=0; SET NAMES utf8mb4;"; cat "${dump_path}" | sed -e "${SED_CMDS}"; echo "SET FOREIGN_KEY_CHECKS=1;") | db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}"
+      $0 list
     fi
-
-    echo "Done."
-
-    # Création du verrou d'installation
-    touch "${ROOT_DIR}/clients/${client}/documents/install.lock"
-    chmod 664 "${ROOT_DIR}/clients/${client}/documents/install.lock"
-    echo "Install lock created."
-    ;;
-  
-  config)
-    [[ -n "${client}" ]] || usage
-    dc "${client}" config
-    ;;
-
-  build)
-    [[ -n "${client}" ]] || usage
-    shift 2
-    dc "${client}" build "$@"
     ;;
 
   create)
-    [[ -n "${client}" ]] || usage
-    
-    doli_version="${3:-22}"
-    php_image="${4:-php:8.4-fpm-bookworm}"
-
-    # Validation version Dolibarr
-    CORE_DIR="${ROOT_DIR}/cores/dolibarr-${doli_version}/htdocs"
-    if [[ ! -d "${CORE_DIR}" ]]; then
-      echo "Error: Dolibarr core version ${doli_version} not found in ${ROOT_DIR}/cores/dolibarr-${doli_version}"
-      echo "Available versions:"
-      ls -1 "${ROOT_DIR}/cores" | sed 's/dolibarr-//'
-      exit 1
+    # Interactive mode for client name
+    client="${client_arg}"
+    if [[ -z "${client}" ]]; then
+      read -p "Client name (e.g. mycompany): " client
+      [[ -z "${client}" ]] && log_error "Client name is required."
     fi
 
-    CLIENT_DIR="${ROOT_DIR}/clients/${client}"
+    # Check if exists
+    CLIENT_DIR="${CLIENTS_DIR}/${client}"
     if [[ -d "${CLIENT_DIR}" ]]; then
-      echo "Error: Client directory ${CLIENT_DIR} already exists."
-      exit 1
+      log_error "Client directory ${CLIENT_DIR} already exists."
     fi
 
-    echo "Creating client ${client} (Dolibarr ${doli_version}, PHP ${php_image}) in ${CLIENT_DIR} ..."
-    
-    # Arborescence
-    mkdir -p "${CLIENT_DIR}/"{conf,custom,db,documents}
-    touch "${CLIENT_DIR}/"{conf,custom,db,documents}/.gitkeep
+    # Interactive mode for version
+    doli_version="${3:-}"
+    if [[ -z "${doli_version}" ]]; then
+      echo -e "${YELLOW}Available Dolibarr versions:${NC}"
+      versions=($(get_available_versions))
+      for i in "${!versions[@]}"; do
+        echo "  $((i+1))) ${versions[$i]}"
+      done
+      read -p "Select version [${versions[-1]}]: " ver_idx
+      if [[ -z "${ver_idx}" ]]; then
+        doli_version="${versions[-1]}"
+      else
+        doli_version="${versions[$((ver_idx-1))]}"
+      fi
+    fi
 
-    # .env initial
+    # Validation version
+    CORE_DIR="${CORES_DIR}/dolibarr-${doli_version}/htdocs"
+    if [[ ! -d "${CORE_DIR}" ]]; then
+      log_error "Dolibarr version ${doli_version} not found in ${CORES_DIR}"
+    fi
+
+    php_image="${4:-}"
+    if [[ -z "${php_image}" ]]; then
+      echo -e "${YELLOW}Common PHP versions:${NC}"
+      php_versions=("7.4" "8.0" "8.1" "8.2" "8.3" "8.4")
+      for i in "${!php_versions[@]}"; do echo "  $((i+1))) ${php_versions[$i]}"; done
+      read -p "Select PHP version [8.4]: " php_idx
+      if [[ -z "${php_idx}" ]]; then
+        php_ver="8.4"
+      else
+        php_ver="${php_versions[$((php_idx-1))]}"
+      fi
+      php_image="php:${php_ver}-fpm-bookworm"
+    fi
+
+    log_info "Creating client ${NC}${PURPLE}${client}${NC} (Dolibarr ${doli_version}, PHP ${php_image})..."
+
+    # --- Steps ---
+    log_step "Step 1/6: Creating directories..."
+    mkdir -p "${CLIENT_DIR}/"{conf,custom,db,documents,scripts}
+    chmod 777 "${CLIENT_DIR}/documents" "${CLIENT_DIR}/conf" "${CLIENT_DIR}/custom" "${CLIENT_DIR}/scripts"
+    touch "${CLIENT_DIR}/"{conf,custom,db,documents,scripts}/.gitkeep
+
+    log_step "Step 2/6: Generating .env configuration..."
     cat <<EOF > "${CLIENT_DIR}/.env"
 PROJECT=${client}
 VHOST=${client}.local
 
+# Paths relative to docker/compose.yml
 DOLI_CORE_PATH=../cores/dolibarr-${doli_version}/htdocs
 CLIENT_PATH=../clients/${client}
 
@@ -193,83 +207,183 @@ DB_PASS=$(openssl rand -hex 12)
 DB_ROOT_PASS=root
 EOF
 
-    # Creation base et user dans le conteneur partagé
+    db_pass=$(grep '^DB_PASS=' "${CLIENT_DIR}/.env" | cut -d= -f2)
+    vhost=$(grep '^VHOST=' "${CLIENT_DIR}/.env" | cut -d= -f2)
+
+    log_step "Step 3/6: Initializing shared database..."
     db_up
-    echo "Creating database and user in shared MariaDB ..."
-    # shellcheck disable=SC2094
     db_exec -uroot -p"root" <<EOSQL
 CREATE DATABASE IF NOT EXISTS \`${client}_dolibarr\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '${client}_dolibarr'@'%' IDENTIFIED BY '$(grep '^DB_PASS=' "${CLIENT_DIR}/.env" | cut -d= -f2)';
-CREATE USER IF NOT EXISTS '${client}_dolibarr'@'localhost' IDENTIFIED BY '$(grep '^DB_PASS=' "${CLIENT_DIR}/.env" | cut -d= -f2)';
+CREATE USER IF NOT EXISTS '${client}_dolibarr'@'%' IDENTIFIED BY '${db_pass}';
+CREATE USER IF NOT EXISTS '${client}_dolibarr'@'localhost' IDENTIFIED BY '${db_pass}';
 GRANT ALL PRIVILEGES ON \`${client}_dolibarr\`.* TO '${client}_dolibarr'@'%';
 GRANT ALL PRIVILEGES ON \`${client}_dolibarr\`.* TO '${client}_dolibarr'@'localhost';
 FLUSH PRIVILEGES;
 EOSQL
 
-    # conf.php initial
+    log_step "Step 4/6: Generating Dolibarr conf.php..."
     cat <<EOF > "${CLIENT_DIR}/conf/conf.php"
 <?php
-// Configuration forcee pour BDD partagee
-\$dolibarr_main_url_root='http://${client}.local';
+// Generated by client script
+\$dolibarr_main_url_root='http://${vhost}';
 \$dolibarr_main_document_root='/var/www/html';
 \$dolibarr_main_url_root_alt='/custom';
 \$dolibarr_main_document_root_alt='/var/www/html/custom';
 \$dolibarr_main_data_root='/var/www/html/documents';
 \$dolibarr_main_db_host='dolibarr-db';
 \$dolibarr_main_db_user='${client}_dolibarr';
-\$dolibarr_main_db_pass='$(grep '^DB_PASS=' "${CLIENT_DIR}/.env" | cut -d= -f2)';
+\$dolibarr_main_db_pass='${db_pass}';
 \$dolibarr_main_db_name='${client}_dolibarr';
 EOF
+    chmod 666 "${CLIENT_DIR}/conf/conf.php"
 
-    # Configuration PHPStorm (.idea)
+    log_step "Step 5/6: Configuring IDE (PHPStorm)..."
     mkdir -p "${CLIENT_DIR}/.idea"
-
-    # modules.xml
     cat <<EOF > "${CLIENT_DIR}/.idea/modules.xml"
 <?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-  <component name="ProjectModuleManager">
-    <modules>
-      <module fileurl="file://\$PROJECT_DIR\$/.idea/${client}.iml" filepath="\$PROJECT_DIR\$/.idea/${client}.iml" />
-    </modules>
-  </component>
-</project>
+<project version="4"><component name="ProjectModuleManager"><modules>
+<module fileurl="file://\$PROJECT_DIR\$/.idea/${client}.iml" filepath="\$PROJECT_DIR\$/.idea/${client}.iml" />
+</modules></component></project>
 EOF
-
-    # php.xml
     cat <<EOF > "${CLIENT_DIR}/.idea/php.xml"
 <?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-  <component name="PhpProjectSharedConfiguration" php_language_level="7.4">
-    <option name="suggestChangeDefaultLanguageLevel" value="false" />
-  </component>
-</project>
+<project version="4"><component name="PhpProjectSharedConfiguration" php_language_level="7.4"><option name="suggestChangeDefaultLanguageLevel" value="false" /></component></project>
 EOF
-
-    # ${client}.iml
     cat <<EOF > "${CLIENT_DIR}/.idea/${client}.iml"
 <?xml version="1.0" encoding="UTF-8"?>
-<module type="WEB_MODULE" version="4">
-  <component name="NewModuleRootManager">
-    <content url="file://\$MODULE_DIR\$">
-      <excludeFolder url="file://\$MODULE_DIR\$/documents" />
-    </content>
-    <content url="file://\$MODULE_DIR\$/../../cores/dolibarr-${doli_version}">
-      <sourceFolder url="file://\$MODULE_DIR\$/../../cores/dolibarr-${doli_version}" isTestSource="false" />
-    </content>
-    <orderEntry type="inheritedJdk" />
-    <orderEntry type="sourceFolder" forTests="false" />
-  </component>
-</module>
+<module type="WEB_MODULE" version="4"><component name="NewModuleRootManager">
+<content url="file://\$MODULE_DIR\$"><excludeFolder url="file://\$MODULE_DIR\$/documents" /></content>
+<content url="file://\$MODULE_DIR\$/../../cores/dolibarr-${doli_version}"><sourceFolder url="file://\$MODULE_DIR\$/../../cores/dolibarr-${doli_version}" isTestSource="false" /></content>
+<orderEntry type="inheritedJdk" /><orderEntry type="sourceFolder" forTests="false" /></component></module>
 EOF
 
-    echo "Environment created for ${client}."
-    echo ""
-    echo "Next steps:"
-    echo "  1. Add this line to your /etc/hosts:"
-    echo "     127.0.0.1 ${client}.local"
-    echo "  2. Run: ./client up ${client}"
-    echo "  3. Go to: http://${client}.local/install/"
+    log_step "Step 6/6: Updating /etc/hosts..."
+    update_hosts "${vhost}"
+
+    log_success "Client '${client}' is ready!"
+    echo -e "\n${YELLOW}To finish setup:${NC}"
+    echo -e "  1. Start stack:  ${CYAN}./client up ${client}${NC}"
+    echo -e "  2. Installation: ${CYAN}$(client_url "${client}")install/${NC}"
+    ;;
+
+  up)
+    [[ -n "${client_arg}" ]] || usage
+    db_up
+    dc "${client_arg}" up -d --remove-orphans "${@:3}"
+    log_success "Environment is up: $(client_url "${client_arg}")"
+    ;;
+
+  down)
+    [[ -n "${client_arg}" ]] || usage
+    dc "${client_arg}" down "${@:3}"
+    ;;
+
+  restart)
+    [[ -n "${client_arg}" ]] || usage
+    dc "${client_arg}" restart "${@:3}"
+    ;;
+
+  logs)
+    [[ -n "${client_arg}" ]] || usage
+    dc "${client_arg}" logs -f --tail=200 "${@:3}"
+    ;;
+
+  shell)
+    [[ -n "${client_arg}" ]] || usage
+    dc "${client_arg}" exec php bash "${@:3}"
+    ;;
+
+  url)
+    [[ -n "${client_arg}" ]] || usage
+    client_url "${client_arg}"
+    ;;
+
+  hosts)
+    [[ -n "${client_arg}" ]] || usage
+    env_file="$(need_client_env "${client_arg}")"
+    vhost=$(grep -E '^VHOST=' "${env_file}" | cut -d= -f2)
+    update_hosts "${vhost}"
+    ;;
+
+
+  restore)
+    [[ -n "${client_arg}" ]] || usage
+    env_file="$(need_client_env "${client_arg}")"
+    
+    # Read variables from .env
+    DB_NAME=$(grep -E '^DB_NAME=' "${env_file}" | cut -d= -f2)
+    DB_USER=$(grep -E '^DB_USER=' "${env_file}" | cut -d= -f2)
+    DB_PASS=$(grep -E '^DB_PASS=' "${env_file}" | cut -d= -f2)
+    DB_ROOT_PASS=$(grep -E '^DB_ROOT_PASS=' "${env_file}" | cut -d= -f2)
+
+    dump_path="${3:-${CLIENTS_DIR}/${client_arg}/db/dump.sql.gz}"
+    if [[ ! -f "${dump_path}" ]]; then
+      log_error "Dump not found: ${dump_path}"
+    fi
+
+    db_up
+    log_info "Cleaning and Restoring ${dump_path} into ${DB_NAME}..."
+
+    # Reset database
+    db_exec -uroot -p"${DB_ROOT_PASS}" -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`; CREATE DATABASE \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+    SED_CMDS="s/utf8mb3/utf8mb4/g; s/utf8_unicode_ci/utf8mb4_unicode_ci/g; s/utf8_general_ci/utf8mb4_general_ci/g; s/DEFINER=[^ ]*//g; s/DEFINER=[^*]*\*/\*/g"
+
+    if [[ "${dump_path}" == *.gz ]]; then
+      (echo "SET FOREIGN_KEY_CHECKS=0; SET NAMES utf8mb4;"; gunzip -c "${dump_path}" | sed -e "${SED_CMDS}"; echo "SET FOREIGN_KEY_CHECKS=1;") | db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}"
+    else
+      (echo "SET FOREIGN_KEY_CHECKS=0; SET NAMES utf8mb4;"; cat "${dump_path}" | sed -e "${SED_CMDS}"; echo "SET FOREIGN_KEY_CHECKS=1;") | db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}"
+    fi
+
+    log_success "Database restored."
+    touch "${CLIENT_DIR}/documents/install.lock"
+    chmod 664 "${CLIENT_DIR}/documents/install.lock"
+    log_info "Install lock created."
+    ;;
+  
+  config)
+    [[ -n "${client_arg}" ]] || usage
+    dc "${client_arg}" config
+    ;;
+
+  build)
+    [[ -n "${client_arg}" ]] || usage
+    dc "${client_arg}" build "${@:3}"
+    ;;
+
+  completion)
+    # Output bash completion script
+    # To enable: source <(./client completion)
+    cat <<EOF
+_client_completion() {
+    local cur prev opts
+    COMPREPLY=()
+    cur="\${COMP_WORDS[COMP_CWORD]}"
+    prev="\${COMP_WORDS[COMP_CWORD-1]}"
+    opts="list status create up down restart logs shell url hosts restore config build completion"
+
+    # Command completion
+    if [[ \${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( \$(compgen -W "\${opts}" -- \${cur}) )
+        return 0
+    fi
+
+    # Argument completion (clients)
+    case "\${prev}" in
+        up|down|restart|logs|shell|url|hosts|restore|config|build|status)
+            local clients_dir="./clients"
+            if [[ -d "./clients" ]]; then
+                local clients=\$(ls -1 "\${clients_dir}" 2>/dev/null)
+                # Filter out hidden files/dirs if desired, usually ls doesn't show them without -a
+                COMPREPLY=( \$(compgen -W "\${clients}" -- \${cur}) )
+            fi
+            return 0
+            ;;
+    esac
+}
+complete -F _client_completion ./client
+complete -F _client_completion client
+EOF
     ;;
 
   *)
