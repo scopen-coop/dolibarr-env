@@ -309,6 +309,7 @@ EOF
   restore)
     [[ -n "${client_arg}" ]] || usage
     env_file="$(need_client_env "${client_arg}")"
+    CLIENT_DIR="${CLIENTS_DIR}/${client_arg}"
     
     # Read variables from .env
     DB_NAME=$(grep -E '^DB_NAME=' "${env_file}" | cut -d= -f2)
