@@ -3,13 +3,7 @@
 !.env.example
 
 # Dolibarr Data (Client specific)
-clients/*/documents/*
-!clients/*/documents/.gitkeep
-clients/*/db/*
-!clients/*/db/.gitkeep
-clients/*/custom/*
-!clients/*/custom/.gitkeep
-clients/*/conf/conf.php
+clients/*
 
 # Dolibarr Cores (Managed via Git Worktrees)
 cores/
