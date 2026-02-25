@@ -4,6 +4,7 @@
 
 # Dolibarr Data (Client specific)
 clients/*
+!clients/.gitkeep
 
 # Dolibarr Cores (Managed via Git Worktrees)
 cores/
