@@ -50,7 +50,7 @@ Exemple : `./client create mon-projet 18 php:7.4-fpm-alpine`
 ### Commandes usuelles
 - `./client up <client>` : Démarre l'instance.
 - `./client down <client> [--volumes]` : Arrête l'instance.
-- `./client restore <client> [dump.sql.gz]` : Restaure une BDD et crée le `install.lock`.
+- `./client restore <client> [dump.sql(.gz)]` : Restaure une BDD et crée le `install.lock`.
 - `./client logs <client>` : Logs en temps réel.
 - `./client build <client>` : Reconstruit l'image PHP.
 

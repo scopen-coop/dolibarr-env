@@ -84,7 +84,8 @@ ensure_documents_seeded() {
   mkdir -p "${client_dir}/documents"
 
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a --ignore-existing "${seed_dir}/" "${client_dir}/documents/"
+    # Avoid chown/chgrp/time updates when seeding into a user-owned bind mount
+    rsync -a --no-owner --no-group --no-times --omit-dir-times --ignore-existing "${seed_dir}/" "${client_dir}/documents/"
   else
     # Best effort fallback without overwriting existing files
     cp -a -n "${seed_dir}/." "${client_dir}/documents/" 2>/dev/null || true
@@ -343,7 +344,15 @@ EOF
 
     dump_path="${3:-${CLIENTS_DIR}/${client_arg}/db/dump.sql.gz}"
     if [[ ! -f "${dump_path}" ]]; then
-      log_error "Dump not found: ${dump_path}"
+      if [[ -z "${3:-}" && -f "${CLIENTS_DIR}/${client_arg}/db/dump.sql" ]]; then
+        dump_path="${CLIENTS_DIR}/${client_arg}/db/dump.sql"
+      elif [[ -n "${3:-}" && "${3}" == *.gz && -f "${3%.gz}" ]]; then
+        dump_path="${3%.gz}"
+      elif [[ -n "${3:-}" && "${3}" != *.gz && -f "${3}.gz" ]]; then
+        dump_path="${3}.gz"
+      else
+        log_error "Dump not found: ${dump_path}"
+      fi
     fi
 
     db_up
