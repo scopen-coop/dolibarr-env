@@ -300,7 +300,7 @@ EOF
 
   down)
     [[ -n "${client_arg}" ]] || usage
-    dc "${client_arg}" down "${@:3}"
+    dc "${client_arg}" down --remove-orphans "${@:3}"
     ;;
 
   restart)
