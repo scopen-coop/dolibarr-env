@@ -47,6 +47,9 @@ Cela mettra à jour votre dossier `dolibarr-source`. Les dossiers dans `cores/` 
 ```
 Exemple : `./client create mon-projet 18 php:7.4-fpm-alpine`
 
+Note: `./client create` ne pré-crée plus `conf/conf.php` pour laisser Dolibarr démarrer en mode "Fresh install" propre.
+Les champs de la page d'installation restent pré-remplis via `clients/<client>/conf/install.forced.php` (généré automatiquement).
+
 ### Commandes usuelles
 - `./client up <client>` : Démarre l'instance.
 - `./client down <client> [--volumes]` : Arrête l'instance.

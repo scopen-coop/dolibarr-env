@@ -9,6 +9,7 @@ services:
     volumes:
       - ${DOLI_CORE_PATH}:/var/www/html:rw
       - ${CLIENT_PATH}/conf:/var/www/html/conf:rw
+      - ${CLIENT_PATH}/conf/install.forced.php:/var/www/html/install/install.forced.php:ro
       - ${CLIENT_PATH}/documents:/var/www/html/documents:rw
       - ${CLIENT_PATH}/custom:/var/www/html/custom:rw
       - ${CLIENT_PATH}/scripts:/var/www/scripts:rw
