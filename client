@@ -109,12 +109,14 @@ sanitize_conf_for_install() {
       local backup="${conf_file}.broken.$(date +%Y%m%d%H%M%S)"
       mv "${conf_file}" "${backup}"
       log_warn "Detected invalid conf.php for '${client}'. Moved to ${backup}"
+    else
+      # Valid conf.php exists; keep it.
+      return
     fi
   fi
 
-  # Installer requires conf.php to be writable.
-  : > "${conf_file}"
-  chmod 666 "${conf_file}"
+  # Keep conf.php absent so Dolibarr redirects to installer.
+  rm -f "${conf_file}"
 }
 
 client_url() {
