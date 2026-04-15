@@ -6,6 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/docker/compose.yml"
 CLIENTS_DIR="${ROOT_DIR}/clients"
 CORES_DIR="${ROOT_DIR}/cores"
+DOLIBARR_SOURCE_DIR="${ROOT_DIR}/dolibarr-source"
+SANITIZE_SQL_FILE="${ROOT_DIR}/database/sanitize.sql"
 
 # Colors
 export LC_ALL=C.UTF-8
@@ -39,6 +41,7 @@ usage() {
   echo "  ./client url <client>                Show client URL"
   echo "  ./client hosts <client>              Show command to update /etc/hosts"
   echo "  ./client build <client>              Rebuild client image"
+  echo "  ./client self-update [--dry-run]     Update manager repo, Dolibarr source and core worktrees"
   exit 1
 }
 
@@ -58,8 +61,18 @@ dc() {
   shift
   # Retrieve PROJECT from .env
   local project
+  local php_image
+  local normalized_php_image
   project=$(grep -E '^PROJECT=' "${env_file}" | cut -d= -f2)
-  docker compose -f "${COMPOSE_FILE}" --env-file "${env_file}" -p "${project}" "$@"
+  php_image=$(grep -E '^PHP_IMAGE=' "${env_file}" | cut -d= -f2-)
+  normalized_php_image="$(normalize_php_image "${php_image}")"
+
+  if [[ -n "${php_image}" && "${normalized_php_image}" != "${php_image}" ]]; then
+    log_warn "PHP image '${php_image}' is unavailable. Using '${normalized_php_image}' for this run."
+  fi
+
+  PHP_IMAGE="${normalized_php_image:-${php_image}}" \
+    docker compose -f "${COMPOSE_FILE}" --env-file "${env_file}" -p "${project}" "$@"
 }
 
 db_up() {
@@ -69,6 +82,15 @@ db_up() {
 
 db_exec() {
   docker exec -i dolibarr-db mariadb "$@"
+}
+
+apply_sanitize_sql() {
+  local sql_file="${SANITIZE_SQL_FILE}"
+
+  [[ -f "${sql_file}" ]] || log_error "Sanitize SQL file not found: ${sql_file}"
+
+  log_info "Applying sanitize SQL: ${sql_file}"
+  db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" < "${sql_file}"
 }
 
 ensure_documents_seeded() {
@@ -84,8 +106,8 @@ ensure_documents_seeded() {
   mkdir -p "${client_dir}/documents"
 
   if command -v rsync >/dev/null 2>&1; then
-    # Avoid chown/chgrp/time updates when seeding into a user-owned bind mount
-    rsync -a --no-owner --no-group --no-times --omit-dir-times --ignore-existing "${seed_dir}/" "${client_dir}/documents/"
+    # Avoid metadata updates that commonly fail on bind-mounted client documents.
+    rsync -a --no-owner --no-group --no-perms --no-times --omit-dir-times --ignore-existing "${seed_dir}/" "${client_dir}/documents/"
   else
     # Best effort fallback without overwriting existing files
     cp -a -n "${seed_dir}/." "${client_dir}/documents/" 2>/dev/null || true
@@ -102,7 +124,7 @@ sanitize_conf_for_install() {
   local lock_file="${client_dir}/documents/install.lock"
 
   # If installation is finished, never touch conf.php automatically.
-  [[ -f "${lock_file}" ]] && return
+  [[ -f "${lock_file}" ]] && return 0
   if [[ -f "${conf_file}" ]]; then
     # Broken or partial conf.php files can trap installer into a bad state.
     if ! rg -q '\$dolibarr_main_db_host' "${conf_file}"; then
@@ -111,7 +133,7 @@ sanitize_conf_for_install() {
       log_warn "Detected invalid conf.php for '${client}'. Moved to ${backup}"
     else
       # Valid conf.php exists; keep it.
-      return
+      return 0
     fi
   fi
 
@@ -192,6 +214,35 @@ get_available_versions() {
   ls -1 "${CORES_DIR}" | grep "dolibarr-" | sed 's/dolibarr-//' | sort -V
 }
 
+default_php_image_for_version() {
+  local php_ver="$1"
+
+  case "${php_ver}" in
+    7.4|8.0|8.1)
+      echo "php:${php_ver}-fpm-bullseye"
+      ;;
+    *)
+      echo "php:${php_ver}-fpm-bookworm"
+      ;;
+  esac
+}
+
+normalize_php_image() {
+  local php_image="$1"
+
+  case "${php_image}" in
+    php:7.4-fpm-bookworm|php:8.0-fpm-bookworm|php:8.1-fpm-bookworm)
+      local php_ver
+      php_ver="${php_image#php:}"
+      php_ver="${php_ver%-fpm-bookworm}"
+      default_php_image_for_version "${php_ver}"
+      ;;
+    *)
+      echo "${php_image}"
+      ;;
+  esac
+}
+
 update_hosts() {
   local vhost="$1"
   if grep -qE "\s${vhost}$" /etc/hosts; then
@@ -200,6 +251,196 @@ update_hosts() {
     log_step "Adding '${vhost}' to /etc/hosts (requires sudo)..."
     echo "127.0.0.1 ${vhost}" | sudo tee -a /etc/hosts > /dev/null
     log_success "Hosts updated."
+  fi
+}
+
+relpath() {
+  local path="$1"
+
+  if [[ "${path}" == "${ROOT_DIR}" ]]; then
+    echo "."
+  elif [[ "${path}" == "${ROOT_DIR}/"* ]]; then
+    echo "${path#"${ROOT_DIR}/"}"
+  else
+    echo "${path}"
+  fi
+}
+
+SELF_UPDATE_DRY_RUN=0
+SELF_UPDATE_FAILURES=0
+
+run_or_dry() {
+  if [[ "${SELF_UPDATE_DRY_RUN}" == "1" ]]; then
+    printf "%b[DRY-RUN]%b" "${CYAN}" "${NC}"
+    printf " %q" "$@"
+    printf "\n"
+    return 0
+  fi
+
+  "$@"
+}
+
+git_current_branch() {
+  local repo="$1"
+  git -C "${repo}" symbolic-ref --quiet --short HEAD 2>/dev/null || true
+}
+
+git_upstream() {
+  local repo="$1"
+  git -C "${repo}" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true
+}
+
+git_tracked_changes() {
+  local repo="$1"
+  git -C "${repo}" status --porcelain --untracked-files=no
+}
+
+record_self_update_failure() {
+  SELF_UPDATE_FAILURES=$((SELF_UPDATE_FAILURES + 1))
+}
+
+update_git_branch_repo() {
+  local repo="$1"
+  local label="$2"
+  local branch
+  local upstream
+
+  if [[ ! -d "${repo}" ]] || ! git -C "${repo}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log_warn "${label} is not a Git worktree, skipping."
+    record_self_update_failure
+    return 0
+  fi
+
+  branch="$(git_current_branch "${repo}")"
+  if [[ -z "${branch}" ]]; then
+    log_warn "${label} is on a detached HEAD, skipping branch pull."
+    record_self_update_failure
+    return 0
+  fi
+
+  upstream="$(git_upstream "${repo}")"
+  if [[ -z "${upstream}" ]]; then
+    log_warn "${label} branch '${branch}' has no upstream, skipping."
+    record_self_update_failure
+    return 0
+  fi
+
+  log_step "Updating ${label} (${branch} <- ${upstream})"
+  if ! run_or_dry git -C "${repo}" pull --ff-only --autostash --prune; then
+    log_warn "Could not update ${label}. Resolve the Git issue above, then rerun self-update."
+    record_self_update_failure
+  fi
+}
+
+update_manager_repository() {
+  update_git_branch_repo "${ROOT_DIR}" "client manager"
+
+  log_step "Synchronizing Dolibarr submodule"
+  if ! run_or_dry git -C "${ROOT_DIR}" submodule sync --recursive; then
+    log_warn "Could not sync submodules."
+    record_self_update_failure
+  fi
+  if ! run_or_dry git -C "${ROOT_DIR}" submodule update --init --recursive; then
+    log_warn "Could not initialize/update submodules."
+    record_self_update_failure
+  fi
+}
+
+update_dolibarr_source() {
+  local branch
+  local remote_head
+
+  if [[ ! -d "${DOLIBARR_SOURCE_DIR}" ]] || ! git -C "${DOLIBARR_SOURCE_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log_warn "dolibarr-source is not initialized. Run: git submodule update --init --recursive"
+    record_self_update_failure
+    return 0
+  fi
+
+  log_step "Fetching Dolibarr remotes"
+  if ! run_or_dry git -C "${DOLIBARR_SOURCE_DIR}" fetch --all --prune; then
+    log_warn "Could not fetch Dolibarr remotes."
+    record_self_update_failure
+    return 0
+  fi
+
+  branch="$(git_current_branch "${DOLIBARR_SOURCE_DIR}")"
+  if [[ -n "${branch}" ]]; then
+    update_git_branch_repo "${DOLIBARR_SOURCE_DIR}" "dolibarr-source"
+    return 0
+  fi
+
+  remote_head="$(git -C "${DOLIBARR_SOURCE_DIR}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  remote_head="${remote_head:-origin/develop}"
+
+  if [[ -n "$(git_tracked_changes "${DOLIBARR_SOURCE_DIR}")" ]]; then
+    if [[ "${SELF_UPDATE_DRY_RUN}" == "1" ]]; then
+      log_warn "dolibarr-source has local tracked changes; would skip checkout of ${remote_head}."
+    else
+      log_warn "dolibarr-source has local tracked changes; fetched remotes but skipped checkout of ${remote_head}."
+    fi
+    record_self_update_failure
+    return 0
+  fi
+
+  log_step "Updating dolibarr-source detached HEAD to ${remote_head}"
+  if ! run_or_dry git -C "${DOLIBARR_SOURCE_DIR}" checkout --detach "${remote_head}"; then
+    log_warn "Could not move dolibarr-source to ${remote_head}."
+    record_self_update_failure
+  fi
+}
+
+update_core_worktrees() {
+  local core
+  local found=0
+
+  shopt -s nullglob
+  for core in "${CORES_DIR}"/dolibarr-*; do
+    [[ -d "${core}" ]] || continue
+    found=1
+    update_git_branch_repo "${core}" "$(relpath "${core}")"
+  done
+  shopt -u nullglob
+
+  if [[ "${found}" == "0" ]]; then
+    log_warn "No Dolibarr core worktree found in ${CORES_DIR}."
+    record_self_update_failure
+  fi
+}
+
+cmd_self_update() {
+  local arg
+
+  SELF_UPDATE_DRY_RUN=0
+  SELF_UPDATE_FAILURES=0
+
+  for arg in "$@"; do
+    case "${arg}" in
+      --dry-run|-n)
+        SELF_UPDATE_DRY_RUN=1
+        ;;
+      --help|-h)
+        echo "Usage: ./client self-update [--dry-run]"
+        echo "Updates this manager repository, Dolibarr source, and cores/dolibarr-* worktrees."
+        return 0
+        ;;
+      *)
+        log_error "Unknown self-update option: ${arg}"
+        ;;
+    esac
+  done
+
+  if [[ "${SELF_UPDATE_DRY_RUN}" == "1" ]]; then
+    log_info "Dry-run mode enabled; no Git command will be executed."
+  fi
+
+  update_manager_repository
+  update_dolibarr_source
+  update_core_worktrees
+
+  if [[ "${SELF_UPDATE_FAILURES}" -gt 0 ]]; then
+    log_warn "Self-update finished with ${SELF_UPDATE_FAILURES} warning(s)."
+  else
+    log_success "Self-update completed."
   fi
 }
 
@@ -286,7 +527,7 @@ case "${cmd}" in
       else
         php_ver="${php_versions[$((php_idx-1))]}"
       fi
-      php_image="php:${php_ver}-fpm-bookworm"
+      php_image="$(default_php_image_for_version "${php_ver}")"
     fi
 
     log_info "Creating client ${NC}${PURPLE}${client}${NC} (Dolibarr ${doli_version}, PHP ${php_image})..."
@@ -447,7 +688,9 @@ EOF
       (echo "SET FOREIGN_KEY_CHECKS=0; SET NAMES utf8mb4;"; cat "${dump_path}" | sed -e "${SED_CMDS}"; echo "SET FOREIGN_KEY_CHECKS=1;") | db_exec -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}"
     fi
 
-    log_success "Database restored."
+    apply_sanitize_sql
+
+    log_success "Database restored and sanitized."
     generate_conf_php "${client_arg}"
     log_info "Configuration file generated: ${CLIENT_DIR}/conf/conf.php"
     touch "${CLIENT_DIR}/documents/install.lock"
@@ -465,6 +708,10 @@ EOF
     dc "${client_arg}" build "${@:3}"
     ;;
 
+  self-update)
+    cmd_self_update "${@:2}"
+    ;;
+
   completion)
     # Output bash completion script
     # To enable: source <(./client completion)
@@ -474,7 +721,7 @@ _client_completion() {
     COMPREPLY=()
     cur="\${COMP_WORDS[COMP_CWORD]}"
     prev="\${COMP_WORDS[COMP_CWORD-1]}"
-    opts="list status create up down restart logs shell url hosts restore config build completion"
+    opts="list status create up down restart logs shell url hosts restore config build self-update completion"
 
     # Command completion
     if [[ \${COMP_CWORD} -eq 1 ]]; then
