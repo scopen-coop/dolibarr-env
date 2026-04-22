@@ -61,3 +61,11 @@ Les champs de la page d'installation restent pré-remplis via `clients/<client>/
 
 Les dossiers `custom` des clients sont montés dans `/var/www/html/custom/` pour assurer la visibilité des modules.
 Le fichier `conf.php` utilise des chemins absolus pour éviter les erreurs de logs.
+
+
+rsync -avz -e "ssh -p 6022" \
+  --exclude='facture' \
+  --exclude='commande' \
+  --exclude='expedition' \
+  --exclude='fournisseur' \
+  dolihumb@95.178.89.203:/usr/share/dolibarr/htdocs/documents .  
