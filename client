@@ -81,6 +81,16 @@ db_up() {
   docker compose -f "${ROOT_DIR}/database/compose.yml" up -d
 }
 
+reverse_proxy_up() {
+  log_info "Ensuring reverse proxy is up..."
+  docker compose -f "${ROOT_DIR}/reverse-proxy/compose.yml" up -d
+}
+
+shared_infra_up() {
+  reverse_proxy_up
+  db_up
+}
+
 db_exec() {
   docker exec -i dolibarr-db mariadb "$@"
 }
@@ -612,7 +622,7 @@ EOF
 
   up)
     [[ -n "${client_arg}" ]] || usage
-    db_up
+    shared_infra_up
     ensure_documents_seeded "${client_arg}"
     sanitize_conf_for_install "${client_arg}"
     generate_install_forced_php "${client_arg}"
