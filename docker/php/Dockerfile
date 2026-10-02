@@ -18,4 +18,16 @@ RUN chmod +x /usr/local/bin/install-php-extensions && \
 RUN if [ -f /etc/alpine-release ]; then apk add --no-cache shadow; fi && \
     usermod -u 1001 www-data && groupmod -g 1001 www-data
 
+# PHP sessions must live in a writable directory owned by the FPM user.
+# Ownership is also fixed at container start because a named volume can hide the image dir.
+RUN mkdir -p /sessions && \
+    chown www-data:www-data /sessions && \
+    chmod 700 /sessions && \
+    printf "session.save_path=/sessions\n" > /usr/local/etc/php/conf.d/zz-session-path.ini
+
+COPY entrypoint.sh /usr/local/bin/dolibarr-php-entrypoint.sh
+RUN chmod +x /usr/local/bin/dolibarr-php-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/dolibarr-php-entrypoint.sh"]
+CMD ["php-fpm"]
+
 WORKDIR /var/www/html

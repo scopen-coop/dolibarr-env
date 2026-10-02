@@ -1,8 +1,13 @@
--- UPDATE llx_user SET login='admin',pass='admin' WHERE login='florian';
-UPDATE llx_user SET pass='admin',statut=1 WHERE login='admin';
-UPDATE llx_user SET pass='admin',login='admin' WHERE login='scopen';
+-- Keep a known local login without colliding on uk_user_login (login, entity).
+UPDATE llx_user SET pass='admin', statut=1 WHERE login='admin';
+UPDATE llx_user SET pass='admin', login='admin', statut=1
+ WHERE login='scopen'
+   AND NOT EXISTS (
+     SELECT 1 FROM (SELECT rowid FROM llx_user WHERE login='admin') AS existing_admin
+   );
+UPDATE llx_user SET pass='admin', statut=1 WHERE login='scopen';
 UPDATE llx_user SET pass=login WHERE login NOT IN ('admin','scopen');
-UPDATE llx_user SET pass=login where pass<>'admin' OR pass IS NULL;
+UPDATE llx_user SET pass=login WHERE pass<>'admin' OR pass IS NULL;
 DELETE FROM llx_const WHERE name='MAIN_MODULE_SYSLOG';
 DELETE FROM llx_const WHERE name='SYSLOG_LEVEL';
 DELETE FROM llx_const WHERE name='SYSLOG_FILE';

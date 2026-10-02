@@ -13,6 +13,7 @@ services:
       - ${CLIENT_PATH}/documents:/var/www/html/documents:rw
       - ${CLIENT_PATH}/custom:/var/www/html/custom:rw
       - ${CLIENT_PATH}/scripts:/var/www/scripts:rw
+      - php_sessions:/sessions
     networks:
       - internal
       - dolibarr-network
@@ -29,8 +30,11 @@ services:
       - ./nginx/dolibarr.conf:/etc/nginx/conf.d/default.conf:ro
     labels:
       - traefik.enable=true
+      - traefik.http.middlewares.${PROJECT}-redirect-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.${PROJECT}-redirect-https.redirectscheme.permanent=true
       - traefik.http.routers.${PROJECT}.rule=Host(`${VHOST}`)
       - traefik.http.routers.${PROJECT}.entrypoints=web
+      - traefik.http.routers.${PROJECT}.middlewares=${PROJECT}-redirect-https
       - traefik.http.routers.${PROJECT}-secure.rule=Host(`${VHOST}`)
       - traefik.http.routers.${PROJECT}-secure.entrypoints=websecure
       - traefik.http.routers.${PROJECT}-secure.tls=true
@@ -39,6 +43,9 @@ services:
     networks:
       - proxy
       - internal
+
+volumes:
+  php_sessions:
 
 networks:
   proxy:
