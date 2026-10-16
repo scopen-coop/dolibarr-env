@@ -56,6 +56,17 @@ Les champs de la page d'installation restent pré-remplis via `clients/<client>/
 - `./client restore <client> [dump.sql(.gz)]` : Restaure une BDD et crée le `install.lock`.
 - `./client logs <client>` : Logs en temps réel.
 - `./client build <client>` : Reconstruit l'image PHP.
+- `./client cores-update` : Met à jour les worktrees Dolibarr installés.
+- `./client core-add <version>` : Ajoute un core stable depuis la branche officielle `<version>.0`.
+- `./client source-update` : Met à jour le checkout local de `dolibarr-source`.
+
+### Console web d'administration (accès local)
+
+La console affiche les instances et leurs états, ouvre les URL, lit les 200 dernières lignes de logs et expose les actions d'instance (création, démarrage, arrêt, redémarrage, reconstruction, nettoyage et restauration d'une sauvegarde). Depuis la restauration, un dump `.sql` ou `.sql.gz` de 2 Go maximum peut être importé dans le dossier de sauvegarde de l'instance. La console permet aussi de mettre à jour `dolibarr-source`, de mettre à jour les cores installés et d'ajouter une version stable disponible sur la branche officielle. Les actions de base de données demandent de retaper le nom de l'instance.
+
+Depuis ce dépôt sur la machine locale, lancez `./client-web`. Le script ajoute `127.0.0.1 admin.local` à `/etc/hosts` si nécessaire (avec demande de mot de passe `sudo`), démarre Traefik et la console, puis affiche `http://admin.local`. La création d'une instance ajoute aussi son domaine local à `/etc/hosts`. La console ne demande aucun identifiant.
+
+La console est servie par Traefik sur le port HTTP 80, lié à `127.0.0.1`. Elle rejoint le réseau privé partagé avec Traefik et un réseau sortant dédié, non partagé avec les instances, utilisé pour les mises à jour Git. Le conteneur utilise le socket Docker, le dépôt monté en lecture-écriture et `/etc/hosts` pour piloter les instances et ajouter leurs domaines locaux ; les commandes du client sont lancées avec l'UID/GID courant pour préserver les propriétaires des fichiers. Docker et le plugin Docker Compose doivent être installés, et l'utilisateur courant doit pouvoir accéder au daemon Docker. `./client-web stop` arrête la console ; `./client-web logs` affiche ses logs. Le proxy reste actif pour les autres instances. La console n'expose pas de terminal, de configuration avec secrets ni la mise à jour globale du dépôt.
 
 ## Architecture
 

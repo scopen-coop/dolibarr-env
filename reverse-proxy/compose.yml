@@ -8,16 +8,20 @@ services:
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
     ports:
-      - "80:80"
-      - "443:443"
-      - "8081:8080" # dashboard (optionnel)
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+      - "127.0.0.1:8081:8080" # dashboard (optionnel)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - DOCKER_API_VERSION=1.44
     networks:
       - proxy
+      - admin-backend
 
 networks:
   proxy:
     name: proxy
+  admin-backend:
+    name: admin-backend
+    internal: true

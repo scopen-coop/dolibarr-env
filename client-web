@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROXY_COMPOSE="${ROOT_DIR}/reverse-proxy/compose.yml"
+MANAGER_COMPOSE="${ROOT_DIR}/manager_web/compose.yml"
+ACTION="${1:-start}"
+
+case "$ACTION" in
+  start|stop|logs)
+    ;;
+  help|-h|--help)
+    printf 'Usage : %s [start|stop|logs]\n' "${0##*/}"
+    exit 0
+    ;;
+  *)
+    printf 'Action inconnue : %s\nUsage : %s [start|stop|logs]\n' "$ACTION" "${0##*/}" >&2
+    exit 2
+    ;;
+esac
+
+if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
+  printf 'Docker avec le plugin Docker Compose doit être installé.\n' >&2
+  exit 1
+fi
+
+if [[ ! -S /var/run/docker.sock ]]; then
+  printf 'Socket Docker introuvable : /var/run/docker.sock\n' >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  printf 'Le daemon Docker est inaccessible pour l’utilisateur courant. Vérifiez ses droits puis relancez ./client-web.\n' >&2
+  exit 1
+fi
+
+export PROJECT_ROOT="$ROOT_DIR"
+export HOST_UID="$(id -u)"
+export HOST_GID="$(id -g)"
+export DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
+export HOST_GROUPS="$(id -G | tr ' ' ',')"
+case ",${HOST_GROUPS}," in
+  *",${DOCKER_SOCKET_GID},"*) ;;
+  *) HOST_GROUPS="${HOST_GROUPS},${DOCKER_SOCKET_GID}" ;;
+esac
+
+compose_manager() {
+  docker compose --project-directory "${ROOT_DIR}/manager_web" -f "$MANAGER_COMPOSE" "$@"
+}
+
+ensure_admin_host() {
+  local addresses
+  addresses="$(awk '$1 !~ /^#/ { for (i = 2; i <= NF; i++) if ($i == "admin.local") print $1 }' /etc/hosts)"
+  if [[ -n "$addresses" ]]; then
+    while IFS= read -r address; do
+      if [[ "$address" != "127.0.0.1" ]]; then
+        printf 'admin.local est déjà associé à %s dans /etc/hosts. Corrigez cette entrée pour utiliser 127.0.0.1.\n' "$address" >&2
+        return 1
+      fi
+    done <<< "$addresses"
+    return 0
+  fi
+
+  if ! command -v sudo >/dev/null; then
+    printf 'Ajoutez « 127.0.0.1 admin.local » à /etc/hosts, puis relancez ./client-web.\n' >&2
+    return 1
+  fi
+  printf '127.0.0.1 admin.local\n' | sudo tee -a /etc/hosts >/dev/null
+}
+
+case "$ACTION" in
+  start)
+    ensure_admin_host
+    docker compose --project-directory "${ROOT_DIR}/reverse-proxy" -f "$PROXY_COMPOSE" up -d
+    compose_manager up -d --build
+    printf 'Console prête : http://admin.local\n'
+    ;;
+  stop)
+    compose_manager down
+    ;;
+  logs)
+    compose_manager logs --tail=200 --follow
+    ;;
+esac

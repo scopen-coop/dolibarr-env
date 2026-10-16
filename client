@@ -42,6 +42,9 @@ usage() {
   echo "  ./client url <client>                Show client URL"
   echo "  ./client hosts <client>              Show command to update /etc/hosts"
   echo "  ./client build <client>              Rebuild client image"
+  echo "  ./client cores-update                Update all installed Dolibarr core worktrees"
+  echo "  ./client core-add <major-version>    Add a stable Dolibarr core version"
+  echo "  ./client source-update               Update the dolibarr-source submodule checkout"
   echo "  ./client self-update [--dry-run]     Update manager repo, Dolibarr source and core worktrees"
   exit 1
 }
@@ -479,6 +482,53 @@ cmd_self_update() {
   fi
 }
 
+cmd_cores_update() {
+  SELF_UPDATE_FAILURES=0
+  update_core_worktrees
+  if [[ "${SELF_UPDATE_FAILURES}" -gt 0 ]]; then
+    log_warn "Core update finished with ${SELF_UPDATE_FAILURES} warning(s)."
+    return 1
+  fi
+  log_success "Dolibarr core worktrees updated."
+}
+
+cmd_source_update() {
+  SELF_UPDATE_DRY_RUN=0
+  SELF_UPDATE_FAILURES=0
+  update_dolibarr_source
+  if [[ "${SELF_UPDATE_FAILURES}" -gt 0 ]]; then
+    log_warn "dolibarr-source update failed."
+    return 1
+  fi
+  log_success "dolibarr-source updated."
+}
+
+cmd_core_add() {
+  local major="${1:-}"
+  local branch
+  local core_path
+
+  [[ "${major}" =~ ^[1-9][0-9]?$ ]] || log_error "Use a stable major version from 1 to 99, for example: ./client core-add 24"
+  branch="${major}.0"
+  core_path="${CORES_DIR}/dolibarr-${major}"
+  [[ ! -e "${core_path}" && ! -L "${core_path}" ]] || log_error "Core already exists: ${core_path}"
+  [[ -d "${DOLIBARR_SOURCE_DIR}" ]] || log_error "dolibarr-source is not initialized. Run: git submodule update --init --recursive"
+
+  mkdir -p "${CORES_DIR}"
+  log_step "Fetching Dolibarr ${branch}"
+  git -C "${DOLIBARR_SOURCE_DIR}" fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}" || log_error "Could not fetch Dolibarr branch '${branch}'."
+  git -C "${DOLIBARR_SOURCE_DIR}" show-ref --verify --quiet "refs/remotes/origin/${branch}" || log_error "Dolibarr branch '${branch}' was not found on origin."
+
+  if git -C "${DOLIBARR_SOURCE_DIR}" show-ref --verify --quiet "refs/heads/${branch}"; then
+    git -C "${DOLIBARR_SOURCE_DIR}" branch --set-upstream-to="origin/${branch}" "${branch}"
+    git -C "${DOLIBARR_SOURCE_DIR}" worktree add "${core_path}" "${branch}"
+    git -C "${core_path}" pull --ff-only --prune
+  else
+    git -C "${DOLIBARR_SOURCE_DIR}" worktree add --track -b "${branch}" "${core_path}" "origin/${branch}"
+  fi
+  log_success "Dolibarr ${major} core added at ${core_path}."
+}
+
 # --- Commands ---
 
 cmd="${1:-}"
@@ -627,7 +677,11 @@ EOF
 EOF
 
     log_step "Step 7/7: Updating /etc/hosts..."
-    update_hosts "${vhost}"
+    if [[ "${CLIENT_SKIP_HOSTS_UPDATE:-0}" == "1" ]]; then
+      log_warn "Skipping /etc/hosts update (requested by caller)."
+    else
+      update_hosts "${vhost}"
+    fi
 
     log_success "Client '${client}' is ready!"
     echo -e "\n${YELLOW}To finish setup:${NC}"
@@ -754,6 +808,21 @@ EOF
     cmd_self_update "${@:2}"
     ;;
 
+  cores-update)
+    [[ $# -eq 1 ]] || usage
+    cmd_cores_update
+    ;;
+
+  source-update)
+    [[ $# -eq 1 ]] || usage
+    cmd_source_update
+    ;;
+
+  core-add)
+    [[ $# -eq 2 ]] || usage
+    cmd_core_add "${client_arg}"
+    ;;
+
   completion)
     # Output bash completion script
     # To enable: source <(./client completion)
@@ -763,7 +832,7 @@ _client_completion() {
     COMPREPLY=()
     cur="\${COMP_WORDS[COMP_CWORD]}"
     prev="\${COMP_WORDS[COMP_CWORD-1]}"
-    opts="list status create up down restart logs shell url hosts restore sanitize config build self-update completion"
+    opts="list status create up down restart logs shell url hosts restore sanitize config build cores-update core-add source-update self-update completion"
 
     # Command completion
     if [[ \${COMP_CWORD} -eq 1 ]]; then

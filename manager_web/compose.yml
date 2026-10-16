@@ -1,0 +1,40 @@
+services:
+  manager:
+    build: .
+    working_dir: ${PROJECT_ROOT:?Lancez le service avec ./client-web}
+    user: "0:0"
+    group_add:
+      - "${DOCKER_SOCKET_GID:?}"
+    command: ["python3", "manager_web/app.py"]
+    environment:
+      CLIENT_SKIP_HOSTS_UPDATE: "1"
+      HOME: /tmp
+      PYTHONDONTWRITEBYTECODE: "1"
+      MANAGER_ALLOWED_HOST: admin.local
+      MANAGER_BIND_ADDRESS: 0.0.0.0
+      MANAGER_CLIENT_GID: "${HOST_GID:?}"
+      MANAGER_CLIENT_GROUPS: "${HOST_GROUPS:?}"
+      MANAGER_CLIENT_UID: "${HOST_UID:?}"
+      MANAGER_HOSTS_FILE: /host-etc-hosts
+      MANAGER_PORT: "8765"
+    volumes:
+      - ${PROJECT_ROOT}:${PROJECT_ROOT}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/hosts:/host-etc-hosts:rw
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dolibarr-admin.rule=Host(`admin.local`)
+      - traefik.http.routers.dolibarr-admin.entrypoints=web
+      - traefik.http.services.dolibarr-admin.loadbalancer.server.port=8765
+      - traefik.docker.network=admin-backend
+    networks:
+      - admin-backend
+      - manager-egress
+    restart: unless-stopped
+
+networks:
+  admin-backend:
+    external: true
+    name: admin-backend
+  manager-egress:
+    name: manager-egress
